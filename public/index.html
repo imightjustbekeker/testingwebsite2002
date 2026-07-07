@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kinetic Groq Visualizer</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #030303;
+            color: #ffffff;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+
+        #webgl-canvas {
+            position: absolute;
+            top: 0; left: 0; width: 100vw; height: 100vh;
+            z-index: 1;
+            display: none;
+        }
+
+        #lyrics-container {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 2;
+            width: 80%;
+            max-width: 800px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 20px;
+            pointer-events: none;
+        }
+
+        .word {
+            font-size: 5vw;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: -2px;
+            opacity: 0;
+            transform: translateY(30px) scale(0.92);
+            transition: opacity 0.1s cubic-bezier(0.16, 1, 0.3, 1), 
+                        transform 0.1s cubic-bezier(0.16, 1, 0.3, 1);
+            text-shadow: 0px 4px 30px rgba(255, 255, 255, 0.15);
+            position: absolute;
+        }
+
+        .word.visible {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100vw; height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+            background: #030303;
+            transition: opacity 0.4s ease;
+        }
+
+        .upload-box {
+            border: 2px dashed #222;
+            padding: 50px;
+            border-radius: 16px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+        }
+
+        .upload-box:hover { 
+            border-color: #444; 
+            background: #080808;
+        }
+
+        input[type="file"] { display: none; }
+
+        button {
+            background: #ffffff;
+            color: #000000;
+            border: none;
+            padding: 14px 28px;
+            font-size: 1rem;
+            font-weight: bold;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-top: 25px;
+            display: none;
+            letter-spacing: 1px;
+        }
+
+        #status-text {
+            margin-top: 20px;
+            color: #666;
+            font-family: monospace;
+            font-size: 0.9rem;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="upload-box" id="drop-zone" onclick="document.getElementById('file-input').click()">
+            <h2>Drop Track Here</h2>
+            <p>Select audio file to process (.mp3, .wav)</p>
+            <input type="file" id="file-input" accept="audio/*">
+        </div>
+        <div id="status-text"></div>
+        <button id="play-btn">LAUNCH PARSE ENGINE</button>
+    </div>
+
+    <canvas id="webgl-canvas"></canvas>
+    <div id="lyrics-container"></div>
+    <audio id="audio-source"></audio>
+
+    <script>
+        let lyricTimestamps = [];
+        let audioContext, analyser, dataArray;
+        const uiLayer = document.getElementById('ui-layer');
+        const statusText = document.getElementById('status-text');
+        const playBtn = document.getElementById('play-btn');
+        const fileInput = document.getElementById('file-input');
+        const audio = document.getElementById('audio-source');
+        const container = document.getElementById('lyrics-container');
+        const canvas = document.getElementById('webgl-canvas');
+
+        // --- 1. FILE UPLOAD & GROQ EDGE RUNTIME FETCH ---
+        fileInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            document.getElementById('drop-zone').style.display = 'none';
+            statusText.innerText = "Routing stream through Groq LPU context...";
+
+            audio.src = URL.createObjectURL(file);
+
+            const formData = new FormData();
+            formData.append('audio', file);
+
+            try {
+                const response = await fetch('/api/transcribe', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                if (data.error) throw new Error(data.error);
+
+                lyricTimestamps = data.words;
+                statusText.innerText = "Token alignment mapping complete.";
+                playBtn.style.display = 'block';
+
+                lyricTimestamps.forEach((item, index) => {
+                    const span = document.createElement('span');
+                    span.textContent = item.word;
+                    span.className = 'word';
+                    span.id = `word-${index}`;
+                    container.appendChild(span);
+                });
+
+            } catch (err) {
+                statusText.innerText = "Pipeline Interrupted: " + err.message;
+                statusText.style.color = "#ff3333";
+            }
+        });
+
+        // --- 2. EXECUTION ENGINE INIT ---
+        playBtn.addEventListener('click', () => {
+            uiLayer.style.opacity = '0';
+            setTimeout(() => uiLayer.style.display = 'none', 400);
+            canvas.style.display = 'block';
+            
+            initAudio();
+            if (audioContext.state === 'suspended') audioContext.resume();
+            audio.play();
+            
+            initWebGL();
+            animate();
+        });
+
+        // --- 3. AUDIO DISCRETE FREQUENCY SAMPLING ---
+        function initAudio() {
+            if (audioContext) return;
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            const source = audioContext.createMediaElementSource(audio);
+            source.connect(analyser);
+            analyser.connect(audioContext.destination);
+            analyser.fftSize = 256;
+            dataArray = new Uint8Array(analyser.frequencyBinCount);
+        }
+
+        // --- 4. WEBGL MATRIX INSTANTIATION ---
+        let scene, camera, renderer, particles;
+
+        function initWebGL() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
+            
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            camera.position.z = 60;
+
+            const particleCount = 2500;
+            const geometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(particleCount * 3);
+            
+            for(let i = 0; i < particleCount * 3; i++) {
+                positions[i] = (Math.random() - 0.5) * 220;
+            }
+            
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            const material = new THREE.PointsMaterial({
+                color: 0xffffff, size: 0.4, transparent: true, opacity: 0.7
+            });
+            
+            particles = new THREE.Points(geometry, material);
+            scene.add(particles);
+
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+
+        // --- 5. HIGH-REFRESH UNIFIED SYNCHRONIZATION LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+            let bassPulse = 1;
+
+            if (analyser) {
+                analyser.getByteFrequencyData(dataArray);
+                const bassVal = dataArray.slice(0, 4).reduce((a, b) => a + b) / 4;
+                bassPulse = 1 + (bassVal / 255) * 0.45; 
+            }
+
+            particles.rotation.y += 0.0008;
+            particles.rotation.x += 0.0004;
+            particles.scale.set(bassPulse, bassPulse, bassPulse); 
+
+            const currentTime = audio.currentTime;
+            
+            for (let i = 0; i < lyricTimestamps.length; i++) {
+                const item = lyricTimestamps[i];
+                const element = document.getElementById(`word-${i}`);
+                
+                if (currentTime >= item.start && currentTime <= item.end + 0.15) {
+                    if (!element.classList.contains('visible')) element.classList.add('visible');
+                } else {
+                    if (element.classList.contains('visible')) element.classList.remove('visible');
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
