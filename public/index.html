@@ -8,7 +8,7 @@
         body {
             margin: 0;
             overflow: hidden;
-            background-color: #030303;
+            background-color: #050505;
             color: #ffffff;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         }
@@ -20,38 +20,58 @@
             display: none;
         }
 
-        #lyrics-container {
+        /* Upgraded Lyrics Viewport */
+        #lyrics-viewport {
             position: absolute;
             top: 50%; left: 50%;
             transform: translate(-50%, -50%);
             z-index: 2;
-            width: 80%;
-            max-width: 800px;
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: center;
-            gap: 20px;
+            width: 90%;
+            max-width: 900px;
+            height: 150px;
+            overflow: hidden;
             pointer-events: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #lyrics-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 24px;
+            white-space: nowrap;
+            transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
         }
 
         .word {
-            font-size: 5vw;
+            font-size: 5.5vw;
             font-weight: 900;
             text-transform: uppercase;
             letter-spacing: -2px;
-            opacity: 0;
-            transform: translateY(30px) scale(0.92);
-            transition: opacity 0.1s cubic-bezier(0.16, 1, 0.3, 1), 
-                        transform 0.1s cubic-bezier(0.16, 1, 0.3, 1);
-            text-shadow: 0px 4px 30px rgba(255, 255, 255, 0.15);
-            position: absolute;
+            color: rgba(255, 255, 255, 0.15);
+            transform: scale(0.85);
+            transition: color 0.15s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), filter 0.2s ease;
+            filter: blur(2px);
         }
 
-        .word.visible {
-            opacity: 1;
-            transform: translateY(0) scale(1);
+        /* Active word popping state */
+        .word.active {
+            color: #ffffff;
+            transform: scale(1.15);
+            filter: blur(0px);
+            text-shadow: 0px 0px 40px rgba(255, 255, 255, 0.6);
         }
 
+        /* Out of focus words that passed by */
+        .word.passed {
+            color: rgba(255, 255, 255, 0.04);
+            transform: scale(0.75) translateY(-10px);
+            filter: blur(4px);
+        }
+
+        /* Setup UI Layer */
         #ui-layer {
             position: absolute;
             top: 0; left: 0; width: 100vw; height: 100vh;
@@ -60,7 +80,7 @@
             justify-content: center;
             align-items: center;
             z-index: 10;
-            background: #030303;
+            background: #050505;
             transition: opacity 0.4s ease;
         }
 
@@ -116,7 +136,11 @@
     </div>
 
     <canvas id="webgl-canvas"></canvas>
-    <div id="lyrics-container"></div>
+    
+    <div id="lyrics-viewport">
+        <div id="lyrics-container"></div>
+    </div>
+
     <audio id="audio-source"></audio>
 
     <script>
@@ -130,7 +154,7 @@
         const container = document.getElementById('lyrics-container');
         const canvas = document.getElementById('webgl-canvas');
 
-        // --- 1. FILE UPLOAD & GROQ EDGE RUNTIME FETCH ---
+        // --- 1. FILE UPLOAD & EDGE RUNTIME FETCH ---
         fileInput.addEventListener('change', async (e) => {
             const file = e.target.files[0];
             if (!file) return;
@@ -184,7 +208,7 @@
             animate();
         });
 
-        // --- 3. AUDIO DISCRETE FREQUENCY SAMPLING ---
+        // --- 3. AUDIO FREQUENCY SAMPLING ---
         function initAudio() {
             if (audioContext) return;
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -196,32 +220,51 @@
             dataArray = new Uint8Array(analyser.frequencyBinCount);
         }
 
-        // --- 4. WEBGL MATRIX INSTANTIATION ---
-        let scene, camera, renderer, particles;
+        // --- 4. ADVANCED WEBGL WAVE FIELD ---
+        let scene, camera, renderer, particleGeometry, particles;
+        const countX = 60;
+        const countY = 60;
+        let positions, initialZ;
 
         function initWebGL() {
             scene = new THREE.Scene();
-            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 1000);
+            camera.position.set(0, 35, 75);
+            camera.lookAt(new THREE.Vector3(0, 0, 0));
+
             renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
-            
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-            camera.position.z = 60;
 
-            const particleCount = 2500;
-            const geometry = new THREE.BufferGeometry();
-            const positions = new Float32Array(particleCount * 3);
+            const numParticles = countX * countY;
+            positions = new Float32Array(numParticles * 3);
+            initialZ = new Float32Array(numParticles);
+
+            let i = 0;
+            const separation = 3.5;
             
-            for(let i = 0; i < particleCount * 3; i++) {
-                positions[i] = (Math.random() - 0.5) * 220;
+            for (let ix = 0; ix < countX; ix++) {
+                for (let iy = 0; iy < countY; iy++) {
+                    positions[i] = (ix * separation) - ((countX * separation) / 2); // X
+                    positions[i + 1] = 0;                                           // Y
+                    positions[i + 2] = (iy * separation) - ((countY * separation) / 2); // Z
+                    
+                    initialZ[i / 3] = positions[i + 2];
+                    i += 3;
+                }
             }
-            
-            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+            particleGeometry = new THREE.BufferGeometry();
+            particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
             const material = new THREE.PointsMaterial({
-                color: 0xffffff, size: 0.4, transparent: true, opacity: 0.7
+                color: 0xffffff,
+                size: 0.35,
+                transparent: true,
+                opacity: 0.4
             });
-            
-            particles = new THREE.Points(geometry, material);
+
+            particles = new THREE.Points(particleGeometry, material);
             scene.add(particles);
 
             window.addEventListener('resize', () => {
@@ -232,30 +275,86 @@
         }
 
         // --- 5. HIGH-REFRESH UNIFIED SYNCHRONIZATION LOOP ---
+        let clock = new THREE.Clock();
+        let lastActiveIndex = -1;
+
         function animate() {
             requestAnimationFrame(animate);
-            let bassPulse = 1;
+            
+            const elapsedTime = clock.getElapsedTime();
+            let bassFactor = 0;
 
             if (analyser) {
                 analyser.getByteFrequencyData(dataArray);
                 const bassVal = dataArray.slice(0, 4).reduce((a, b) => a + b) / 4;
-                bassPulse = 1 + (bassVal / 255) * 0.45; 
+                bassFactor = bassVal / 255; // Normalized value between 0 and 1
             }
 
-            particles.rotation.y += 0.0008;
-            particles.rotation.x += 0.0004;
-            particles.scale.set(bassPulse, bassPulse, bassPulse); 
+            // Animate 3D Wave Field based on Time + Bass Amplitude
+            const positionAttribute = particleGeometry.getAttribute('position');
+            let index = 0;
 
-            const currentTime = audio.currentTime;
+            for (let ix = 0; ix < countX; ix++) {
+                for (let iy = 0; iy < countY; iy++) {
+                    // Generate layered mathematical waves
+                    const wave1 = Math.sin((ix * 0.15) + (elapsedTime * 2.0));
+                    const wave2 = Math.cos((iy * 0.15) + (elapsedTime * 1.5));
+                    
+                    // Base amplitude gets multiplied significantly when the bass kicks hard
+                    const amplitude = 3.0 + (bassFactor * 12.0);
+                    
+                    // Write new height data directly to the WebGL vertex buffer
+                    positionAttribute.setY(index, (wave1 + wave2) * amplitude);
+                    
+                    index++;
+                }
+            }
+            positionAttribute.needsUpdate = true;
             
+            // Camera subtle floating movement
+            camera.position.x = Math.sin(elapsedTime * 0.2) * 10;
+
+            // --- KINETIC LYRIC SYSTEM RENDERING ---
+            const currentTime = audio.currentTime;
+            let currentActiveIndex = -1;
+
             for (let i = 0; i < lyricTimestamps.length; i++) {
                 const item = lyricTimestamps[i];
-                const element = document.getElementById(`word-${i}`);
-                
-                if (currentTime >= item.start && currentTime <= item.end + 0.15) {
-                    if (!element.classList.contains('visible')) element.classList.add('visible');
-                } else {
-                    if (element.classList.contains('visible')) element.classList.remove('visible');
+                if (currentTime >= item.start && currentTime <= item.end) {
+                    currentActiveIndex = i;
+                    break;
+                }
+            }
+
+            // If no exact match is found, preserve the last known active word until the next boundary hits
+            if (currentActiveIndex === -1) {
+                for (let i = 0; i < lyricTimestamps.length; i++) {
+                    if (currentTime > lyricTimestamps[i].end && (i === lyricTimestamps.length - 1 || currentTime < lyricTimestamps[i+1].start)) {
+                        currentActiveIndex = i;
+                        break;
+                    }
+                }
+            }
+
+            // Update DOM states and reposition container if index shifted
+            if (currentActiveIndex !== -1) {
+                lyricTimestamps.forEach((_, i) => {
+                    const element = document.getElementById(`word-${i}`);
+                    if (i === currentActiveIndex) {
+                        element.className = 'word active';
+                    } else if (i < currentActiveIndex) {
+                        element.className = 'word passed';
+                    } else {
+                        element.className = 'word';
+                    }
+                });
+
+                // Calculate horizontal shift offset to keep the current word perfectly centered
+                const activeElement = document.getElementById(`word-${currentActiveIndex}`);
+                if (activeElement && currentActiveIndex !== lastActiveIndex) {
+                    const offset = activeElement.offsetLeft + (activeElement.offsetWidth / 2);
+                    container.style.transform = `translateX(calc(50vw - ${offset}px))`;
+                    lastActiveIndex = currentActiveIndex;
                 }
             }
 
